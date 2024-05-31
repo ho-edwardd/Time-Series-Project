@@ -1,0 +1,305 @@
+---
+title: "174-finalcode"
+author: "Edward Ho"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = T,
+                      cache = T,
+                      eval = T,
+                      message = F,
+                      warning = F,
+                      fig.width = 5,
+                      fig.height = 5,
+                      fig.align = 'center')
+```
+
+## Package Loading
+
+```{r message=FALSE, warning=FALSE}
+library(lubridate)
+library(dplyr)
+library(MASS)
+library(ggplot2)
+library(ggfortify)
+library(forecast)
+library(MuMIn)
+library(readr)
+library(xts)
+library(astsa)
+library(tidyr)
+
+plot.roots <- function(ar.roots=NULL, ma.roots=NULL, size=2, angles=FALSE, special=NULL, sqecial=NULL,my.pch=1,first.col="blue",second.col="red",main=NULL)
+{xylims <- c(-size,size)
+      omegas <- seq(0,2*pi,pi/500)
+      temp <- exp(complex(real=rep(0,length(omegas)),imag=omegas))
+      plot(Re(temp),Im(temp),typ="l",xlab="x",ylab="y",xlim=xylims,ylim=xylims,main=main)
+      abline(v=0,lty="dotted")
+      abline(h=0,lty="dotted")
+      if(!is.null(ar.roots))
+        {
+          points(Re(1/ar.roots),Im(1/ar.roots),col=first.col,pch=my.pch)
+          points(Re(ar.roots),Im(ar.roots),col=second.col,pch=my.pch)
+        }
+      if(!is.null(ma.roots))
+        {
+          points(Re(1/ma.roots),Im(1/ma.roots),pch="*",cex=1.5,col=first.col)
+          points(Re(ma.roots),Im(ma.roots),pch="*",cex=1.5,col=second.col)
+        }
+      if(angles)
+        {
+          if(!is.null(ar.roots))
+            {
+              abline(a=0,b=Im(ar.roots[1])/Re(ar.roots[1]),lty="dotted")
+              abline(a=0,b=Im(ar.roots[2])/Re(ar.roots[2]),lty="dotted")
+            }
+          if(!is.null(ma.roots))
+            {
+              sapply(1:length(ma.roots), function(j) abline(a=0,b=Im(ma.roots[j])/Re(ma.roots[j]),lty="dotted"))
+            }
+        }
+      if(!is.null(special))
+        {
+          lines(Re(special),Im(special),lwd=2)
+        }
+      if(!is.null(sqecial))
+        {
+          lines(Re(sqecial),Im(sqecial),lwd=2)
+        }
+        }
+```
+
+## Importing Data
+
+```{r}
+sales_raw <- read_csv("kalimati_tarkari_dataset.csv")
+sales_raw
+```
+
+## Cleaning Data
+
+```{r}
+df1 <- sales_raw[c("Commodity","Date","Average")]
+df1 <- df1[df1$Commodity == "Water Melon(Green)",]
+df1$Date <- ymd(paste(df1$Date))
+df1 <- df1[order(df1$Date), ]
+df1 <- df1[,c("Date","Average")] %>%
+  drop_na()
+df1$YearMonth <- format(df1$Date, "%Y-%m")
+sales <- aggregate(Average ~ YearMonth, data = df1, FUN = mean)
+sales
+```
+
+## Initial Graph
+
+```{r}
+# Watermelon Sales
+sales_ts <- ts(sales$"Average",start=c(2013,1),frequency=12)
+
+# Plot
+plot.ts(sales_ts,xlab = "Year",ylab='Average Price',main = "Raw Data")
+
+#checks variance
+var(sales_ts)
+```
+
+## Split, Testing and Training
+
+```{r}
+#split into training and testing
+sales.tr <- sales_ts[1:85]
+sales.tst <- sales_ts[86:96]
+```
+
+## Graph Training
+
+```{r}
+fit <- lm(sales_ts ~ as.numeric(1:length(sales_ts)))
+plot.ts(sales.tr, main = "Training Data")
+abline(fit, col="red")
+abline(h=mean(sales_ts), col="blue")
+legend(x="topright", inset = 0.01,legend=c("Linear Regression", "Mean"),
+ col=c("red", "blue"), lty=1:2, cex=0.5)
+
+hist(sales.tr, col="light blue", xlab="", main="Frequency of Average Cost of Watermelon(Green)")
+acf(sales.tr,lag.max=30, main="ACF of average cost")
+```
+
+## Box-Cox Transformation
+
+```{r}
+shapiro.test(sales.tr)
+
+bcTransform <- boxcox(sales.tr~ as.numeric(1:length(sales.tr)))
+lambda=bcTransform$x[which(bcTransform$y == max(bcTransform$y))]
+lambda
+
+sales.bc = (1/lambda)*((sales.tr^lambda)-1)
+plot.ts(sales.bc, main ="Box-Cox transformed data")
+hist(sales.bc, main ="Box-Cox transformed data")
+
+shapiro.test(sales.bc)
+```
+
+## Box-cox decomp
+
+```{r}
+y <- ts(as.ts(sales.bc), frequency = 12)
+decomp <- decompose(y)
+plot(decomp)
+```
+
+
+## Differencing for seasonality at lag 12
+
+```{r}
+var(sales.bc)
+sales.bc_12 <- diff(sales.bc, lag=12)
+plot.ts(sales.bc_12, main="ln(U_t) differenced at lag 12")
+var(sales.bc_12)
+fit <- lm(sales.bc_12 ~ as.numeric(1:length(sales.bc_12)))
+abline(fit, col="red")
+abline(h=mean(sales.bc_12), col="blue")
+legend(x="topleft", inset = 0.05,legend=c("Mean", "Linear Regression"),
+ col=c("red", "blue"), lty=1:2, cex=1)
+acf(sales.bc_12, lag.max=30,main="ACF")
+pacf(sales.bc_12, lag.max=30,main="PACF")
+hist(sales.bc_12, col="light blue", xlab="")
+var(sales.bc_12)
+```
+
+## Fitting
+
+```{r}
+# Q = 1
+# q = 1,3
+# P = 1
+# p = 1,2,3
+
+fit1 <- arima(sales.bc, order=c(3,0,1), seasonal = list(order = c(1,1,1), period = 12),
+method="ML")
+AICc(fit1)
+fit2 <- arima(sales.bc, order=c(1,0,3), seasonal = list(order = c(1,1,1), period = 12),
+method="ML")
+AICc(fit2)
+```
+
+
+## Model A
+
+```{r}
+fit1 
+
+plot.roots(polyroot(c(1,0,0,0,0,0,0,0,0,0,0,0,-0.3137)),polyroot(c(1,0,0,0,0,0,0,0,0,0,0,0,-0.6277)),main="MA roots Model A(seasonal)")
+plot.roots(polyroot(c(1,0.7039,0.1819,-0.4045)),polyroot(c(1,-0.3276)), main="MA roots Model A(non-seasonal)")
+```
+
+## model B
+
+```{r}
+fit2 
+
+plot.roots(polyroot(c(1,0,0,0,0,0,0,0,0,0,0,0,-0.2836)),polyroot(c(1,0,0,0,0,0,0,0,0,0,0,0,-0.6597)), main="MA & AR roots Model B(seasonal)")
+plot.roots(polyroot(c(1,0.0944,-0.5691)),polyroot(c(1,0.2945,0.4622,0.0981)), main="MA roots Model B(non-seasonal)")
+```
+
+
+##Diagnostic checking for model A
+```{r}
+#Histogram
+res<-residuals(fit1)
+hist(res,density=20,breaks=20, col="blue", xlab="", prob=TRUE,main="Histogram Model A ")
+m <- mean(res)
+std <- sqrt(var(res))
+curve( dnorm(x,m,std), add=TRUE )
+#plot
+plot.ts(res)
+fitt <- lm(res ~ as.numeric(1:length(res))); abline(fitt, col="red")
+abline(h=mean(res), col="blue")
+#qqplot
+qqnorm(res,main= "Normal Q-Q Plot for Model A")
+qqline(res,col="blue")
+#acf/pacf
+acf(res, lag.max=40)
+pacf(res, lag.max=40)
+#Portmanteau Tests
+shapiro.test(res)
+Box.test(res, lag = 10, type = c("Box-Pierce"), fitdf = 4)
+Box.test(res, lag = 10, type = c("Ljung-Box"), fitdf = 4)
+Box.test(res^2, lag = 10, type = c("Ljung-Box"), fitdf = 0)
+ar(res, aic = TRUE, order.max = NULL, method = c("yule-walker"))
+```
+
+#Diagnostic checking for model B
+```{r}
+#Histogram
+res2<-residuals(fit2)
+hist(res2,density=20,breaks=20, col="blue", xlab="", prob=TRUE,main="Histogram Model B ")
+m2 <- mean(res2)
+std2 <- sqrt(var(res2))
+curve( dnorm(x,m2,std2), add=TRUE )
+#plot
+plot.ts(res2)
+fitt2 <- lm(res2 ~ as.numeric(1:length(res2))); abline(fitt, col="red")
+abline(h=mean(res2), col="blue")
+#qqplot
+qqnorm(res2,main= "Normal Q-Q Plot for Model B")
+qqline(res2,col="blue")
+#acf/pacf
+acf(res2, lag.max=40)
+pacf(res2, lag.max=40)
+#Portmanteau Tests
+shapiro.test(res2)
+Box.test(res2, lag = 10, type = c("Box-Pierce"), fitdf = 4)
+Box.test(res2, lag = 10, type = c("Ljung-Box"), fitdf = 4)
+Box.test(res2^2, lag = 10, type = c("Ljung-Box"), fitdf = 0)
+ar(res2, aic = TRUE, order.max = NULL, method = c("yule-walker"))
+```
+
+#Forecasting using model A:
+
+```{r}
+forecast(fit1)
+pred.tr <- predict(fit1, n.ahead = 11)
+U.tr= pred.tr$pred + 2*pred.tr$se
+L.tr= pred.tr$pred - 2*pred.tr$se
+ts.plot(sales.bc, xlim=c(1,length(sales.bc)+11), ylim = c(min(sales.bc),max(U.tr)), main = "Box-cox
+transformed forecast")
+lines(U.tr, col="blue", lty="dashed")
+lines(L.tr, col="blue", lty="dashed")
+points((length(sales.bc)+1):(length(sales.bc)+11), pred.tr$pred, col="red")
+```
+
+#with OG data
+```{r}
+pred.orig <- InvBoxCox(pred.tr$pred, lambda)
+U= InvBoxCox(U.tr,lambda)
+L= InvBoxCox(L.tr,lambda)
+ts.plot(sales.tr, xlim=c(1,length(sales.tr)+11), ylim = c(min(sales.tr),max(U)),main = "Original data
+Forecast")
+lines(U, col="blue", lty="dashed")
+lines(L, col="blue", lty="dashed")
+points((length(sales.tr)+1):(length(sales.tr)+11), pred.orig, col="red")
+#zoom
+ts.plot(sales.tr, xlim = c(40,length(sales.tr)+11), ylim = c(15,80))
+lines(U, col="blue", lty="dashed")
+lines(L, col="blue", lty="dashed")
+points((length(sales.tr)+1):(length(sales.tr)+11), pred.orig, col="red")
+#add true values
+ts.plot(sales$"Average", xlim = c(40,length(sales.tr)+11), ylim = c(15,80),col="red",main = "Final
+Forecast with tests values")
+lines(U, col="blue", lty="dashed")
+lines(L, col="blue", lty="dashed")
+points((length(sales.tr)+1):(length(sales.tr)+11), pred.orig, col="green")
+```
+
+
+
+
+
+
+
